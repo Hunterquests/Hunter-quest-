@@ -442,8 +442,8 @@ body::after{content:'';position:fixed;inset:0;background-image:linear-gradient(r
   </div>
 
   <div class="brow" id="endRow" style="justify-content:center;margin-top:16px;">
-    <button class="btn" onclick="endDay()">⟢ END DAY // BANK XP</button>
-    <button class="btn btn-g" onclick="markOff()">⟢ OFF / SICK DAY</button>
+    <button class="btn" id="endDayMainBtn" onclick="endDay()">⟢ END DAY // BANK XP</button>
+    <button class="btn btn-g" id="offDayBtn" onclick="markOff()">⟢ OFF / SICK DAY</button>
   </div>
 </div>
 
@@ -684,7 +684,11 @@ function rollover(){
   if(prev&&prev.key){
     const sm=summarize(prev);
     S.archive[prev.key]={...sm,meals:prev.meals||[],journal:prev.journal,cardio:prev.cardio,cardioType:prev.cardioType,woType:prev.woType,water:prev.water||0,ended:prev.ended,offDay:prev.offDay,isShabbat:prev.isShabbat,isFriday:prev.isFriday};
-    if(!prev.ended&&!prev.isShabbat&&!prev.offDay){assignPen(sm);S.streak=0;}
+    // Only assign penalty if this was yesterday (not older past days)
+    const yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);
+    const wasYesterday=prev.key===dayKey(yesterday);
+    if(!prev.ended&&!prev.isShabbat&&!prev.offDay&&wasYesterday){assignPen(sm);S.streak=0;}
+    else if(!prev.ended&&!prev.isShabbat&&!prev.offDay){S.streak=0;}
   }
   S.todayPen=S.pendingPen||[];S.pendingPen=[];S.penDone={};
   S.today=mkDay();save();
@@ -741,7 +745,8 @@ function renderAll(){
   const pb=document.getElementById('pastBan');
   if(viewDay){pb.style.display='flex';document.getElementById('pastLabel').textContent=viewDay;}
   else pb.style.display='none';
-  renderPenBanner();renderSpecialBan();renderWo();renderCardio();renderWater();renderMacros();renderQuests();renderMeals();renderJournal();renderSettings();renderSummary();renderBody();renderCal();renderPR();
+  renderPenBanner();renderSpecialBan();renderWo();renderCardio();renderWater();
+  renderEndRow();renderMacros();renderQuests();renderMeals();renderJournal();renderSettings();renderSummary();renderBody();renderCal();renderPR();
 }
 
 function renderPenBanner(){
@@ -923,7 +928,16 @@ function renderSummary(){
   document.getElementById('pPh').className='pill '+(phOk?'ok':((day.ended||ip)?'no':''));
   document.getElementById('pMn').className='pill '+(mnOk?'ok':((day.ended||ip)?'no':''));
   document.getElementById('pSt').className='pill '+(stOk?'ok':((day.ended||ip)?'no':''));
-  const er=document.getElementById('endRow');if(er)er.style.display=ip?'none':'';
+  const er=document.getElementById('endRow');
+  if(er){
+    if(!ip){
+      er.style.display='';  // today — show both buttons
+    } else {
+      // Past day — show bank/sick buttons only if not already ended
+      const pday=S.archive[viewDay]||{};
+      er.style.display=pday.ended?'none':'';
+    }
+  }
 }
 
 function renderPR(){
@@ -1139,6 +1153,67 @@ function endDay(){
   S.today.ended=true;S.lastDay=S.today.key;
   S.archive[S.today.key]={...sm,meals:S.today.meals,journal:S.today.journal,cardio:S.today.cardio,cardioType:S.today.cardioType,woType:S.today.woType,water:S.today.water||0,ended:true,offDay:S.today.offDay||false};
   save();renderAll();
+}
+
+function renderEndRow(){
+  const mainBtn=document.getElementById('endDayMainBtn');
+  const offBtn=document.getElementById('offDayBtn');
+  if(!mainBtn||!offBtn)return;
+  if(viewDay){
+    const a=S.archive[viewDay]||{};
+    if(a.ended){
+      mainBtn.textContent='⟢ ALREADY BANKED';mainBtn.disabled=true;
+      offBtn.style.display='none';
+    } else {
+      mainBtn.textContent='⟢ BANK XP FOR THIS DAY';mainBtn.disabled=false;mainBtn.onclick=bankPastDay;
+      offBtn.textContent='⟢ MARK AS OFF / SICK';offBtn.onclick=markPastOff;offBtn.style.display='';
+    }
+  } else {
+    mainBtn.textContent='⟢ END DAY // BANK XP';mainBtn.disabled=false;mainBtn.onclick=endDay;
+    offBtn.textContent='⟢ OFF / SICK DAY';offBtn.onclick=markOff;offBtn.style.display='';
+  }
+}
+
+function bankPastDay(){
+  if(!viewDay)return;
+  const a=S.archive[viewDay]||(S.archive[viewDay]={});
+  if(a.ended){notify('SYSTEM','ALREADY BANKED');return;}
+  // Calculate XP from what was checked on that day
+  const dayObj=getViewDay();
+  const mq=getMentalQ(dayObj);
+  const sq=getStructQ(dayObj);
+  const ab=[...BONUS_Q,...(S.custom||[])];
+  let totalXP=0;
+  const sg={STR:0,INT:0,CHA:0,DIS:0,SOUL:0};
+  mq.forEach(q=>{if((a.mentalDone||{})[q.id]){totalXP+=q.xp;for(const k in(q.stats||{}))sg[k]=(sg[k]||0)+q.stats[k];}});
+  sq.forEach(q=>{if((a.structDone||{})[q.id]){totalXP+=q.xp;for(const k in(q.stats||{}))sg[k]=(sg[k]||0)+q.stats[k];}});
+  ab.forEach(q=>{if((a.bonusDone||{})[q.id]){totalXP+=q.xp;for(const k in(q.stats||{}))sg[k]=(sg[k]||0)+q.stats[k];}});
+  const wo=WO[a.woType||'push']||WO.rest;
+  if(wo.ex.every((_,i)=>(a.exDone||{})[i])&&wo.ex.length>0){totalXP+=30;sg.STR+=3;}
+  if((a.cardio||0)>=S.settings.cardio){totalXP+=15;sg.STR+=1;sg.DIS+=1;}
+  if((a.water||0)>=8){totalXP+=5;sg.STR+=1;}
+  const m=macroTotals(dayObj);
+  if(m.p>=S.settings.pro*0.85&&m.cal>=S.settings.cal-200&&m.cal<=S.settings.cal+100){totalXP+=20;sg.STR+=2;sg.DIS+=1;}
+  S.xp+=totalXP;
+  for(const k in sg)S.stats[k]=(S.stats[k]||0)+sg[k];
+  checkLevel();
+  // Mark as ended — NO penalty, NO streak impact for past days
+  a.ended=true;
+  a.allOk=!!(a.phOk&&a.mnOk&&a.stOk);
+  save();renderAll();
+  notify('XP BANKED','+'+totalXP+' XP FROM '+viewDay);
+}
+
+function markPastOff(){
+  if(!viewDay)return;
+  if(!S.archive[viewDay])S.archive[viewDay]={};
+  const a=S.archive[viewDay];
+  if(a.ended){notify('SYSTEM','ALREADY BANKED');return;}
+  a.offDay=true;a.ended=true;
+  a.phOk=true;a.mnOk=true;a.stOk=true;a.allOk=true;
+  // Still bank any XP they actually completed
+  bankPastDay();
+  // bankPastDay already calls save/renderAll/notify
 }
 
 function markOff(){
